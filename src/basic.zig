@@ -70,102 +70,110 @@ pub fn main() !u8 {
 
     std.debug.assert(cli.options.@"start-address" != null);
 
-    var input_file: std.fs.File = if (cli.positionals.len > 0 and !std.mem.eql(u8, "-", cli.positionals[0]))
-        try std.fs.cwd().openFile(cli.positionals[0], .{})
-    else
-        std.io.getStdIn();
-    defer if (cli.positionals.len > 0)
-        input_file.close();
+    switch (cli.options.mode) {
+        .compile => {
+            var input_file: std.fs.File = if (cli.positionals.len > 0 and !std.mem.eql(u8, "-", cli.positionals[0]))
+                try std.fs.cwd().openFile(cli.positionals[0], .{})
+            else
+                std.io.getStdIn();
+            defer if (cli.positionals.len > 0)
+                input_file.close();
 
-    const Line = struct {
-        number: u16,
-        tokens: []u8,
-    };
+            const Line = struct {
+                number: u16,
+                tokens: []u8,
+            };
 
-    var lines = std.ArrayList(Line).init(allocator);
-    defer lines.deinit();
+            var lines = std.ArrayList(Line).init(allocator);
+            defer lines.deinit();
 
-    var string_arena = std.heap.ArenaAllocator.init(allocator);
-    defer string_arena.deinit();
+            var string_arena = std.heap.ArenaAllocator.init(allocator);
+            defer string_arena.deinit();
 
-    {
-        var reader = input_file.reader();
+            {
+                var reader = input_file.reader();
 
-        var line_buffer: [1024]u8 = undefined;
+                var line_buffer: [1024]u8 = undefined;
 
-        while (true) {
-            const buffer = (try reader.readUntilDelimiterOrEof(&line_buffer, '\n')) orelse break;
+                while (true) {
+                    const buffer = (try reader.readUntilDelimiterOrEof(&line_buffer, '\n')) orelse break;
 
-            const spc_index = std.mem.indexOf(u8, buffer, " ") orelse return error.MissingLineNumber;
-            const number = try std.fmt.parseInt(u16, buffer[0..spc_index], 10);
+                    const spc_index = std.mem.indexOf(u8, buffer, " ") orelse return error.MissingLineNumber;
+                    const number = try std.fmt.parseInt(u16, buffer[0..spc_index], 10);
 
-            var line = buffer[spc_index + 1 ..];
-            while (line.len > 0 and line[0] == ' ') {
-                line = line[1..];
-            }
-
-            var translated_storage: [250]u8 = undefined;
-
-            var translate_stream = std.io.fixedBufferStream(&translated_storage);
-
-            var out_stream = translate_stream.writer();
-
-            var input_offset: usize = 0;
-            var reading_string = false;
-            while (input_offset < line.len) {
-                const rest = line[input_offset..];
-
-                const token: ?Token = if (reading_string)
-                    null // no tokenization in strings
-                else for (tokens) |tok| {
-                    if (std.mem.startsWith(u8, rest, tok.text)) {
-                        break tok;
+                    var line = buffer[spc_index + 1 ..];
+                    while (line.len > 0 and line[0] == ' ') {
+                        line = line[1..];
                     }
-                } else null;
 
-                if (token) |tok| {
-                    try out_stream.writeAll(tok.sequence);
-                    input_offset += tok.text.len;
-                } else {
-                    const c = line[input_offset];
-                    try out_stream.writeByte(c);
-                    input_offset += 1;
+                    var translated_storage: [250]u8 = undefined;
 
-                    if (c == '\"')
-                        reading_string = !reading_string;
+                    var translate_stream = std.io.fixedBufferStream(&translated_storage);
+
+                    var out_stream = translate_stream.writer();
+
+                    var input_offset: usize = 0;
+                    var reading_string = false;
+                    while (input_offset < line.len) {
+                        const rest = line[input_offset..];
+
+                        const token: ?Token = if (reading_string)
+                            null // no tokenization in strings
+                        else for (tokens) |tok| {
+                            if (std.mem.startsWith(u8, rest, tok.text)) {
+                                break tok;
+                            }
+                        } else null;
+
+                        if (token) |tok| {
+                            try out_stream.writeAll(tok.sequence);
+                            input_offset += tok.text.len;
+                        } else {
+                            const c = line[input_offset];
+                            try out_stream.writeByte(c);
+                            input_offset += 1;
+
+                            if (c == '\"')
+                                reading_string = !reading_string;
+                        }
+                    }
+
+                    try lines.append(Line{
+                        .number = number,
+                        .tokens = try string_arena.allocator.dupe(u8, translate_stream.getWritten()),
+                    });
                 }
             }
 
-            try lines.append(Line{
-                .number = number,
-                .tokens = try string_arena.allocator.dupe(u8, translate_stream.getWritten()),
-            });
-        }
-    }
+            {
+                var output_file: std.fs.File = if (cli.options.output) |out|
+                    try std.fs.cwd().createFile(out, .{})
+                else
+                    std.io.getStdOut();
+                defer if (cli.options.output != null)
+                    output_file.close();
 
-    {
-        var output_file: std.fs.File = if (cli.options.output) |out|
-            try std.fs.cwd().createFile(out, .{})
-        else
-            std.io.getStdOut();
-        defer if (cli.options.output != null)
-            output_file.close();
+                var start_offset: u16 = cli.options.@"start-address".?;
 
-        var start_offset: u16 = cli.options.@"start-address".?;
+                var stream = output_file.writer();
+                try stream.writeIntLittle(u16, start_offset);
+                for (lines.items) |line| {
+                    start_offset += @intCast(u16, 0x05 + 0x01 + line.tokens.len);
 
-        var stream = output_file.writer();
-        try stream.writeIntLittle(u16, start_offset);
-        for (lines.items) |line| {
-            start_offset += @intCast(u16, 0x05 + 0x01 + line.tokens.len);
+                    try stream.writeIntLittle(u16, start_offset);
+                    try stream.writeIntLittle(u16, line.number);
+                    try stream.writeAll(line.tokens);
+                    try stream.writeByte(0);
+                }
 
-            try stream.writeIntLittle(u16, start_offset);
-            try stream.writeIntLittle(u16, line.number);
-            try stream.writeAll(line.tokens);
-            try stream.writeByte(0);
-        }
+                // Write "END OF FILE"
+                try stream.writeAll(&[_]u8{ 0x00, 0x00, 0x00 });
+            }
+        },
 
-        // Write "END OF FILE"
-        try stream.writeAll(&[_]u8{ 0x00, 0x00, 0x00 });
+        .decompile => {
+            @panic("not implemented yet!");
+        },
     }
 
     return 0;
