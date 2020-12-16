@@ -8,6 +8,6 @@ My collection of smaller tools related to [commodore business machines](https://
 
 **Usage:**
 ```
-cbm-basic --mode compile < my-file.bas > my-file.prg
-cbm-basic --mode decompile < my-file.prg > my-file.bas
+cbm-basic -m compile < my-file.bas > MY-FILE.PRG
+cbm-basic -m decompile < MY-FILE.PRG > my-file.bas
 ```
