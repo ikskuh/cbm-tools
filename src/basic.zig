@@ -5,16 +5,23 @@ const Mode = enum {
     compile, decompile
 };
 
+const Device = enum {
+    c64,
+    c128,
+};
+
 const CliArgs = struct {
-    @"start-address": u16 = 0x1C01,
+    @"start-address": ?u16 = null,
     output: ?[]const u8 = null,
     help: bool = false,
     mode: Mode = .compile,
+    device: ?Device = null,
 
     pub const shortcuts = structs{
         .h = "help",
         .o = "output",
         .m = "mode",
+        .d = "device",
     };
 };
 
@@ -40,6 +47,28 @@ pub fn main() !u8 {
         try usage(std.io.getStdOut().writer());
         return 0;
     }
+
+    if (cli.options.device != null and cli.options.@"start-address" != null) {
+        var writer = std.io.getStdErr().writer();
+        try writer.writeAll("Cannot set --device and --start-address at the same time!\n");
+        try usage(writer);
+        return 1;
+    }
+
+    if (cli.options.device == null) {
+        cli.options.device = .c64;
+    }
+
+    std.debug.assert(cli.options.device != null);
+
+    if (cli.options.@"start-address" == null) {
+        cli.options.@"start-address" = switch (cli.options.device.?) {
+            .c64 => 0x0801,
+            .c128 => 0x1C01,
+        };
+    }
+
+    std.debug.assert(cli.options.@"start-address" != null);
 
     var input_file: std.fs.File = if (cli.positionals.len > 0 and !std.mem.eql(u8, "-", cli.positionals[0]))
         try std.fs.cwd().openFile(cli.positionals[0], .{})
@@ -122,7 +151,7 @@ pub fn main() !u8 {
         defer if (cli.options.output != null)
             output_file.close();
 
-        var start_offset: u16 = cli.options.@"start-address";
+        var start_offset: u16 = cli.options.@"start-address".?;
 
         var stream = output_file.writer();
         try stream.writeIntLittle(u16, start_offset);
