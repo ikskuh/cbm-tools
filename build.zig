@@ -25,4 +25,10 @@ pub fn build(b: *std.build.Builder) void {
 
     const run_step = b.step("basic", "Run the app");
     run_step.dependOn(&run_basic_cmd.step);
+
+    const test_step = b.step("test", "Tests all tools");
+    {
+        const basic_test = b.addTest("src/basic.zig");
+        test_step.dependOn(&basic_test.step);
+    }
 }

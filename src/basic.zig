@@ -10,23 +10,54 @@ const Device = enum {
     c128,
 };
 
+const Version = enum {
+    @"1.0",
+    @"2.0",
+    @"3.5",
+    @"7.0",
+};
+
 const CliArgs = struct {
     @"start-address": ?u16 = null,
     output: ?[]const u8 = null,
     help: bool = false,
     mode: Mode = .compile,
     device: ?Device = null,
+    version: ?Version = null,
 
     pub const shortcuts = structs{
         .h = "help",
         .o = "output",
         .m = "mode",
         .d = "device",
+        .v = "version",
     };
 };
 
-fn usage(target: anytype) !void {
-    try target.writeAll("not implemented yet");
+fn usage(app_name: []const u8, target: anytype) !void {
+    try target.print("{} [fileName]\n", .{app_name});
+    try target.writeAll(
+        \\Supported command line arguments:
+        \\  -h, --help                 Prints this help text.
+        \\      --start-address [num]  Defines the load address of the basic program. [num] is decimal (default) or hexadecimal (when prefixed).
+        \\  -o, --output [file]        Sets the output file to [file] when given.
+        \\  -m, --mode [mode]          Sets the mode to `compile` or `decompile`.
+        \\  -d, --device [dev]         Sets the device. Supported devices are listed below.
+        \\  -V, --version [vers]       Sets the used basic version. Supported basic versions are listed below.
+        \\
+        \\In `compile` mode, the application will read BASIC code from stdin or [fileName] when given and will tokenize it into a CBM readable format.
+        \\Each line in the input must have a decimal line number followed by several characters. The input encoding is assumed to be PETSCII.
+        \\
+        \\In `decompile` mode the application will read in a BASIC PRG file and will output detokenized BASIC code.
+        \\Each line in the output will be prefixed by a decimal line number and a space. The output encoding is assumed to be PETSCII.
+        \\
+        \\Supported devices:
+        \\  c64, c128
+        \\
+        \\Supported BASIC versions:
+        \\  1.0, 2.0, 3.5, 7.0
+        \\
+    );
 }
 
 pub fn main() !u8 {
@@ -38,27 +69,28 @@ pub fn main() !u8 {
     var cli = try args_parser.parseForCurrentProcess(CliArgs, allocator);
     defer cli.deinit();
 
+    const app_name = std.fs.path.basename(cli.executable_name orelse @panic("requires executabe name!"));
+
     if (cli.positionals.len > 1) {
-        try usage(std.io.getStdErr().writer());
+        try usage(app_name, std.io.getStdErr().writer());
         return 1;
     }
 
     if (cli.options.help) {
-        try usage(std.io.getStdOut().writer());
+        try usage(app_name, std.io.getStdOut().writer());
         return 0;
     }
 
     if (cli.options.device != null and cli.options.@"start-address" != null) {
         var writer = std.io.getStdErr().writer();
         try writer.writeAll("Cannot set --device and --start-address at the same time!\n");
-        try usage(writer);
+        try usage(app_name, writer);
         return 1;
     }
 
     if (cli.options.device == null) {
         cli.options.device = .c64;
     }
-
     std.debug.assert(cli.options.device != null);
 
     if (cli.options.@"start-address" == null) {
@@ -67,8 +99,22 @@ pub fn main() !u8 {
             .c128 => 0x1C01,
         };
     }
-
     std.debug.assert(cli.options.@"start-address" != null);
+
+    if (cli.options.version == null) {
+        cli.options.version = switch (cli.options.device.?) {
+            .c64 => .@"3.5",
+            .c128 => .@"7.0",
+        };
+    }
+    std.debug.assert(cli.options.version != null);
+
+    const tokens: []const Token = switch (cli.options.version.?) {
+        .@"1.0" => &tokens_1_0,
+        .@"2.0" => &tokens_2_0,
+        .@"3.5" => &tokens_3_5,
+        .@"7.0" => &tokens_7_0,
+    };
 
     switch (cli.options.mode) {
         .compile => {
@@ -79,96 +125,19 @@ pub fn main() !u8 {
             defer if (cli.positionals.len > 0)
                 input_file.close();
 
-            const Line = struct {
-                number: u16,
-                tokens: []u8,
+            var output_file: std.fs.File = if (cli.options.output) |out|
+                try std.fs.cwd().createFile(out, .{})
+            else
+                std.io.getStdOut();
+            defer if (cli.options.output) |out| {
+                output_file.close();
+                std.fs.cwd().deleteFile(out) catch std.debug.panic("failed to delete {}", .{out});
             };
 
-            var lines = std.ArrayList(Line).init(allocator);
-            defer lines.deinit();
-
-            var string_arena = std.heap.ArenaAllocator.init(allocator);
-            defer string_arena.deinit();
-
-            {
-                var reader = input_file.reader();
-
-                var line_buffer: [1024]u8 = undefined;
-
-                while (true) {
-                    const buffer = (try reader.readUntilDelimiterOrEof(&line_buffer, '\n')) orelse break;
-
-                    const spc_index = std.mem.indexOf(u8, buffer, " ") orelse return error.MissingLineNumber;
-                    const number = try std.fmt.parseInt(u16, buffer[0..spc_index], 10);
-
-                    var line = buffer[spc_index + 1 ..];
-                    while (line.len > 0 and line[0] == ' ') {
-                        line = line[1..];
-                    }
-
-                    var translated_storage: [250]u8 = undefined;
-
-                    var translate_stream = std.io.fixedBufferStream(&translated_storage);
-
-                    var out_stream = translate_stream.writer();
-
-                    var input_offset: usize = 0;
-                    var reading_string = false;
-                    while (input_offset < line.len) {
-                        const rest = line[input_offset..];
-
-                        const token: ?Token = if (reading_string)
-                            null // no tokenization in strings
-                        else for (tokens) |tok| {
-                            if (std.mem.startsWith(u8, rest, tok.text)) {
-                                break tok;
-                            }
-                        } else null;
-
-                        if (token) |tok| {
-                            try out_stream.writeAll(tok.sequence);
-                            input_offset += tok.text.len;
-                        } else {
-                            const c = line[input_offset];
-                            try out_stream.writeByte(c);
-                            input_offset += 1;
-
-                            if (c == '\"')
-                                reading_string = !reading_string;
-                        }
-                    }
-
-                    try lines.append(Line{
-                        .number = number,
-                        .tokens = try string_arena.allocator.dupe(u8, translate_stream.getWritten()),
-                    });
-                }
-            }
-
-            {
-                var output_file: std.fs.File = if (cli.options.output) |out|
-                    try std.fs.cwd().createFile(out, .{})
-                else
-                    std.io.getStdOut();
-                defer if (cli.options.output != null)
-                    output_file.close();
-
-                var start_offset: u16 = cli.options.@"start-address".?;
-
-                var stream = output_file.writer();
-                try stream.writeIntLittle(u16, start_offset);
-                for (lines.items) |line| {
-                    start_offset += @intCast(u16, 0x05 + 0x01 + line.tokens.len);
-
-                    try stream.writeIntLittle(u16, start_offset);
-                    try stream.writeIntLittle(u16, line.number);
-                    try stream.writeAll(line.tokens);
-                    try stream.writeByte(0);
-                }
-
-                // Write "END OF FILE"
-                try stream.writeAll(&[_]u8{ 0x00, 0x00, 0x00 });
-            }
+            try compileBasic(allocator, input_file.reader(), output_file.writer(), DeviceInfo{
+                .start_address = cli.options.@"start-address".?,
+                .tokens = tokens,
+            });
         },
 
         .decompile => {
@@ -179,12 +148,117 @@ pub fn main() !u8 {
     return 0;
 }
 
-const Token = struct {
-    text: []const u8,
-    sequence: []const u8,
+const DeviceInfo = struct {
+    start_address: u16,
+    tokens: []const Token,
 };
 
-const tokens = [_]Token{
+fn compileBasic(allocator: *std.mem.Allocator, input_stream: anytype, output_stream: anytype, device: DeviceInfo) !void {
+    const Line = struct {
+        number: u16,
+        tokens: []u8,
+    };
+
+    var lines = std.ArrayList(Line).init(allocator);
+    defer lines.deinit();
+
+    var string_arena = std.heap.ArenaAllocator.init(allocator);
+    defer string_arena.deinit();
+
+    {
+        var line_buffer: [1024]u8 = undefined;
+
+        while (true) {
+            const buffer = (try input_stream.readUntilDelimiterOrEof(&line_buffer, '\n')) orelse break;
+
+            const spc_index = std.mem.indexOf(u8, buffer, " ") orelse return error.MissingLineNumber;
+            const number = try std.fmt.parseInt(u16, buffer[0..spc_index], 10);
+
+            var line = buffer[spc_index + 1 ..];
+            while (line.len > 0 and line[0] == ' ') {
+                line = line[1..];
+            }
+
+            var translated_storage: [250]u8 = undefined;
+
+            var translate_stream = std.io.fixedBufferStream(&translated_storage);
+
+            var out_stream = translate_stream.writer();
+
+            var input_offset: usize = 0;
+            var reading_string = false;
+            while (input_offset < line.len) {
+                const rest = line[input_offset..];
+
+                const token: ?Token = if (reading_string)
+                    null // no tokenization in strings
+                else for (device.tokens) |tok| {
+                    if (std.mem.startsWith(u8, rest, tok.text)) {
+                        break tok;
+                    }
+                } else null;
+
+                if (token) |tok| {
+                    try out_stream.writeAll(tok.sequence);
+                    input_offset += tok.text.len;
+                } else {
+                    const c = line[input_offset];
+                    try out_stream.writeByte(c);
+                    input_offset += 1;
+
+                    if (c == '\"')
+                        reading_string = !reading_string;
+                }
+            }
+
+            try lines.append(Line{
+                .number = number,
+                .tokens = try string_arena.allocator.dupe(u8, translate_stream.getWritten()),
+            });
+        }
+    }
+
+    {
+        var start_offset: u16 = device.start_address;
+
+        try output_stream.writeIntLittle(u16, start_offset);
+        for (lines.items) |line| {
+            start_offset += @intCast(u16, 0x05 + 0x01 + line.tokens.len);
+
+            try output_stream.writeIntLittle(u16, start_offset);
+            try output_stream.writeIntLittle(u16, line.number);
+            try output_stream.writeAll(line.tokens);
+            try output_stream.writeByte(0);
+        }
+
+        // Write "END OF FILE"
+        try output_stream.writeAll(&[_]u8{ 0x00, 0x00, 0x00 });
+    }
+}
+
+const Token = struct {
+    const Self = @This();
+
+    text: []const u8,
+    sequence: []const u8,
+
+    fn compareText(ctx: void, lhs: Self, rhs: Self) bool {
+        return std.mem.order(u8, lhs.text, rhs.text) == .lt;
+    }
+
+    fn compareSequence(ctx: void, lhs: Self, rhs: Self) bool {
+        return std.mem.order(u8, lhs.text, rhs.text) == .lt;
+    }
+};
+
+fn sortTokens(tokens: anytype) @TypeOf(tokens) {
+    var mut = tokens;
+    @setEvalBranchQuota(tokens.len * tokens.len);
+    std.sort.sort(Token, &mut, {}, Token.compareText);
+    return mut;
+}
+
+const tokens_1_0 = sortTokens([_]Token{
     Token{ .text = "END", .sequence = "\x80" },
     Token{ .text = "FOR", .sequence = "\x81" },
     Token{ .text = "NEXT", .sequence = "\x82" },
@@ -259,8 +333,14 @@ const tokens = [_]Token{
     Token{ .text = "CHR", .sequence = "\xc7" },
     Token{ .text = "LEFT", .sequence = "\xc8" },
     Token{ .text = "RIGHT", .sequence = "\xc9" },
-    Token{ .text = "MID", .sequence = "\xca" },
+    Token{ .text = "MID$", .sequence = "\xca" },
+});
+
+const tokens_2_0 = sortTokens(tokens_1_0 ++ [_]Token{
     Token{ .text = "GO", .sequence = "\xcb" },
+});
+
+const tokens_3_5 = sortTokens(tokens_2_0 ++ [_]Token{
     Token{ .text = "RGR", .sequence = "\xcc" },
     Token{ .text = "RCLR", .sequence = "\xcd" },
     Token{ .text = "RLUM", .sequence = "\xce" },
@@ -311,4 +391,120 @@ const tokens = [_]Token{
     Token{ .text = "USING", .sequence = "\xfb" },
     Token{ .text = "UNTIL", .sequence = "\xfc" },
     Token{ .text = "WHILE", .sequence = "\xfd" },
-};
+});
+
+const tokens_7_0 = sortTokens(tokens_3_5 ++ [_]Token{
+    // 0xCE …
+    Token{ .text = "POT", .sequence = "\xce\x02" },
+    Token{ .text = "BUMP", .sequence = "\xce\x03" },
+    Token{ .text = "PEN", .sequence = "\xce\x04" },
+    Token{ .text = "RSPPOS", .sequence = "\xce\x05" },
+    Token{ .text = "RSPRITE", .sequence = "\xce\x06" },
+    Token{ .text = "RSPCOLOR", .sequence = "\xce\x07" },
+    Token{ .text = "XOR", .sequence = "\xce\x08" },
+    Token{ .text = "RWINDOW", .sequence = "\xce\x09" },
+    Token{ .text = "POINTER", .sequence = "\xce\x0a" },
+    // 0xFE …
+    Token{ .text = "BANK", .sequence = "\xfe\x02" },
+    Token{ .text = "FILTER", .sequence = "\xfe\x03" },
+    Token{ .text = "PLAY", .sequence = "\xfe\x04" },
+    Token{ .text = "TEMPO", .sequence = "\xfe\x05" },
+    Token{ .text = "MOVSPR", .sequence = "\xfe\x06" },
+    Token{ .text = "SPRITE", .sequence = "\xfe\x07" },
+    Token{ .text = "SPRCOLOR", .sequence = "\xfe\x08" },
+    Token{ .text = "RREG", .sequence = "\xfe\x09" },
+    Token{ .text = "ENVELOPE", .sequence = "\xfe\x0a" },
+    Token{ .text = "SLEEP", .sequence = "\xfe\x0b" },
+    Token{ .text = "CATALOG", .sequence = "\xfe\x0c" },
+    Token{ .text = "DOPEN", .sequence = "\xfe\x0d" },
+    Token{ .text = "APPEND", .sequence = "\xfe\x0e" },
+    Token{ .text = "DCLOSE", .sequence = "\xfe\x0f" },
+    Token{ .text = "BSAVE", .sequence = "\xfe\x10" },
+    Token{ .text = "BLOAD", .sequence = "\xfe\x11" },
+    Token{ .text = "RECORD", .sequence = "\xfe\x12" },
+    Token{ .text = "CONCAT", .sequence = "\xfe\x13" },
+    Token{ .text = "DVERIFY", .sequence = "\xfe\x14" },
+    Token{ .text = "DCLEAR", .sequence = "\xfe\x15" },
+    Token{ .text = "SPRSAV", .sequence = "\xfe\x16" },
+    Token{ .text = "COLLISION", .sequence = "\xfe\x17" },
+    Token{ .text = "BEGIN", .sequence = "\xfe\x18" },
+    Token{ .text = "BEND", .sequence = "\xfe\x19" },
+    Token{ .text = "WINDOW", .sequence = "\xfe\x1a" },
+    Token{ .text = "BOOT", .sequence = "\xfe\x1b" },
+    Token{ .text = "WIDTH", .sequence = "\xfe\x1c" },
+    Token{ .text = "SPRDEF", .sequence = "\xfe\x1d" },
+    Token{ .text = "QUIT", .sequence = "\xfe\x1e" },
+    Token{ .text = "STASH", .sequence = "\xfe\x1f" },
+    Token{ .text = "FETCH", .sequence = "\xfe\x21" },
+    Token{ .text = "SWAP", .sequence = "\xfe\x23" },
+    Token{ .text = "OFF", .sequence = "\xfe\x24" },
+    Token{ .text = "FAST", .sequence = "\xfe\x25" },
+    Token{ .text = "SLOW", .sequence = "\xfe\x26" },
+});
+
+test "empty program" {
+    var output_buffer: [4096]u8 = undefined;
+    var output_stream = std.io.fixedBufferStream(&output_buffer);
+
+    try compileBasic(
+        std.testing.allocator,
+        std.io.fixedBufferStream("").reader(),
+        output_stream.writer(),
+        DeviceInfo{
+            .start_address = 0x1234,
+            .tokens = &tokens_1_0,
+        },
+    );
+
+    std.testing.expectEqualSlices(u8, "\x34\x12\x00\x00\x00", output_stream.getWritten());
+}
+
+test "10 INPUT I" {
+    var output_buffer: [4096]u8 = undefined;
+    var output_stream = std.io.fixedBufferStream(&output_buffer);
+
+    try compileBasic(
+        std.testing.allocator,
+        std.io.fixedBufferStream("10 INPUT I").reader(),
+        output_stream.writer(),
+        DeviceInfo{
+            .start_address = 0x0000,
+            .tokens = &tokens_1_0,
+        },
+    );
+
+    std.testing.expectEqualSlices(
+        u8,
+        "\x00\x00" ++ // start address
+            "\x09\x00\x0A\x00\x85 I\x00" ++ // 10 INPUT I
+            "\x00\x00\x00", // terminator
+        output_stream.getWritten(),
+    );
+}
+
+test "multiple lines" {
+    var output_buffer: [4096]u8 = undefined;
+    var output_stream = std.io.fixedBufferStream(&output_buffer);
+
+    try compileBasic(
+        std.testing.allocator,
+        std.io.fixedBufferStream(
+            \\10 INPUT I
+            \\20 PRINT "HALLO"
+        ).reader(),
+        output_stream.writer(),
+        DeviceInfo{
+            .start_address = 0x0000,
+            .tokens = &tokens_1_0,
+        },
+    );
+
+    std.testing.expectEqualSlices(
+        u8,
+        "\x00\x00" ++ // start address
+            "\x09\x00\x0A\x00\x85 I\x00" ++ // 10 INPUT I
+            "\x18\x00\x14\x00\x99 \"HALLO\"\x00" ++ // 20 PRINT "HALLO"
+            "\x00\x00\x00", // terminator
+        output_stream.getWritten(),
+    );
+}
