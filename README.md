@@ -1,6 +1,6 @@
 # CBM Tools
 
-My collection of smaller tools related to [commodore business machines](https://de.wikipedia.org/wiki/Commodore_International).
+My collection of smaller tools related to [CBM](https://de.wikipedia.org/wiki/Commodore_International) computers like C64 or C128.
 
 ## `cbm-basic`
 
@@ -29,3 +29,6 @@ Supported devices:
 Supported BASIC versions:
   1.0, 2.0, 3.5, 7.0
 ```
+
+### `cbm2wav`
+(*Planned*) Converts `PRG` files to audio files that can be used with a datassette.
