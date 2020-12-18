@@ -6,14 +6,28 @@ const Mode = enum {
 };
 
 const Device = enum {
+    pet2001,
+    vc20,
+    cbm3001,
+    cbm3008,
+    cbm3016,
+    cbm3032,
+    cbm4016,
+    cbm4032,
+    cbm8016,
+    cbm8032,
     c64,
     c128,
+    c16,
+    c116,
+    @"plus/4",
 };
 
 const Version = enum {
     @"1.0",
     @"2.0",
     @"3.5",
+    @"4.0",
     @"7.0",
 };
 
@@ -71,8 +85,10 @@ pub fn main() !u8 {
 
     const app_name = std.fs.path.basename(cli.executable_name orelse @panic("requires executabe name!"));
 
+    var stderr = std.io.getStdErr().writer();
+
     if (cli.positionals.len > 1) {
-        try usage(app_name, std.io.getStdErr().writer());
+        try usage(app_name, stderr);
         return 1;
     }
 
@@ -82,9 +98,8 @@ pub fn main() !u8 {
     }
 
     if (cli.options.device != null and cli.options.@"start-address" != null) {
-        var writer = std.io.getStdErr().writer();
-        try writer.writeAll("Cannot set --device and --start-address at the same time!\n");
-        try usage(app_name, writer);
+        try stderr.writeAll("Cannot set --device and --start-address at the same time!\n");
+        try usage(app_name, stderr);
         return 1;
     }
 
@@ -97,13 +112,39 @@ pub fn main() !u8 {
         cli.options.@"start-address" = switch (cli.options.device.?) {
             .c64 => 0x0801,
             .c128 => 0x1C01,
+            .pet2001,
+            .cbm3001,
+            .cbm3008,
+            .vc20,
+            .cbm3016,
+            .cbm3032,
+            .c16,
+            .c116,
+            .@"plus/4",
+            .cbm4016,
+            .cbm4032,
+            .cbm8016,
+            .cbm8032,
+            => {
+                try stderr.print("{} has no start address yet!\n", .{@tagName(cli.options.device.?)});
+                return 1;
+            },
         };
     }
     std.debug.assert(cli.options.@"start-address" != null);
 
     if (cli.options.version == null) {
         cli.options.version = switch (cli.options.device.?) {
-            .c64 => .@"3.5",
+            .pet2001 => .@"1.0",
+            .cbm3001, .cbm3008 => .@"1.0",
+            .vc20 => .@"2.0",
+            .cbm3016, .cbm3032 => .@"2.0",
+            .c64 => .@"2.0",
+            .c16 => .@"3.5",
+            .c116 => .@"3.5",
+            .@"plus/4" => .@"3.5",
+            .cbm4016, .cbm4032 => .@"4.0",
+            .cbm8016, .cbm8032 => .@"4.0",
             .c128 => .@"7.0",
         };
     }
@@ -113,6 +154,10 @@ pub fn main() !u8 {
         .@"1.0" => &tokens_1_0,
         .@"2.0" => &tokens_2_0,
         .@"3.5" => &tokens_3_5,
+        .@"4.0" => {
+            try stderr.writeAll("BASIC V4 supported not implemented yet!\n");
+            return 1;
+        },
         .@"7.0" => &tokens_7_0,
     };
 
