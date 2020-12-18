@@ -174,9 +174,13 @@ pub fn main() !u8 {
                 try std.fs.cwd().createFile(out, .{})
             else
                 std.io.getStdOut();
+
+            errdefer if (cli.options.output) |out| {
+                std.fs.cwd().deleteFile(out) catch std.debug.panic("failed to delete {}", .{out});
+            };
+
             defer if (cli.options.output) |out| {
                 output_file.close();
-                std.fs.cwd().deleteFile(out) catch std.debug.panic("failed to delete {}", .{out});
             };
 
             try compileBasic(allocator, input_file.reader(), output_file.writer(), DeviceInfo{
