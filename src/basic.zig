@@ -49,7 +49,7 @@ const CliArgs = struct {
 };
 
 fn usage(app_name: []const u8, target: anytype) !void {
-    try target.print("{} [fileName]\n", .{app_name});
+    try target.print("{s} [fileName]\n", .{app_name});
     try target.writeAll(
         \\Supported command line arguments:
         \\  -h, --help                 Prints this help text.
@@ -126,7 +126,7 @@ pub fn main() !u8 {
             .cbm8016,
             .cbm8032,
             => {
-                try stderr.print("{} has no start address yet!\n", .{@tagName(cli.options.device.?)});
+                try stderr.print("{s} has no start address yet!\n", .{@tagName(cli.options.device.?)});
                 return 1;
             },
         };
@@ -176,7 +176,7 @@ pub fn main() !u8 {
                 std.io.getStdOut();
 
             errdefer if (cli.options.output) |out| {
-                std.fs.cwd().deleteFile(out) catch std.debug.panic("failed to delete {}", .{out});
+                std.fs.cwd().deleteFile(out) catch std.debug.panic("failed to delete {s}", .{out});
             };
 
             defer if (cli.options.output) |out| {
