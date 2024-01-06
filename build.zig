@@ -1,23 +1,22 @@
 const std = @import("std");
 
-const pkgs = struct {
-    const args = std.build.Pkg{
-        .name = "args",
-        .path = "./deps/args/args.zig",
-    };
-};
-
 pub fn build(b: *std.build.Builder) void {
     const target = b.standardTargetOptions(.{});
-    const mode = b.standardReleaseOptions();
+    const optimize = b.standardOptimizeOption(.{});
 
-    const basic_exe = b.addExecutable("cbm-basic", "src/basic.zig");
-    basic_exe.setTarget(target);
-    basic_exe.setBuildMode(mode);
-    basic_exe.addPackage(pkgs.args);
-    basic_exe.install();
+    const args_dep = b.dependency("args", .{});
+    const args_mod = args_dep.module("args");
 
-    const run_basic_cmd = basic_exe.run();
+    const basic_exe = b.addExecutable(.{
+        .name = "cbm-basic",
+        .root_source_file = .{ .path = "src/basic.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    basic_exe.addModule("args", args_mod);
+    b.installArtifact(basic_exe);
+
+    const run_basic_cmd = b.addRunArtifact(basic_exe);
     run_basic_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_basic_cmd.addArgs(args);
@@ -28,7 +27,9 @@ pub fn build(b: *std.build.Builder) void {
 
     const test_step = b.step("test", "Tests all tools");
     {
-        const basic_test = b.addTest("src/basic.zig");
-        test_step.dependOn(&basic_test.step);
+        const basic_test = b.addTest(.{
+            .root_source_file = .{ .path = "src/basic.zig" },
+        });
+        test_step.dependOn(&b.addRunArtifact(basic_test).step);
     }
 }

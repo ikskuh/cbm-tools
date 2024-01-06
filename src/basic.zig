@@ -1,9 +1,7 @@
 const std = @import("std");
 const args_parser = @import("args");
 
-const Mode = enum {
-    compile, decompile
-};
+const Mode = enum { compile, decompile };
 
 const Device = enum {
     pet2001,
@@ -39,7 +37,7 @@ const CliArgs = struct {
     device: ?Device = null,
     version: ?Version = null,
 
-    pub const shortcuts = structs{
+    pub const shorthands = .{
         .h = "help",
         .o = "output",
         .m = "mode",
@@ -78,9 +76,9 @@ pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    const allocator = &gpa.allocator;
+    const allocator = gpa.allocator();
 
-    var cli = try args_parser.parseForCurrentProcess(CliArgs, allocator);
+    var cli = args_parser.parseForCurrentProcess(CliArgs, allocator, .print) catch return 1;
     defer cli.deinit();
 
     const app_name = std.fs.path.basename(cli.executable_name orelse @panic("requires executabe name!"));
@@ -179,7 +177,7 @@ pub fn main() !u8 {
                 std.fs.cwd().deleteFile(out) catch std.debug.panic("failed to delete {s}", .{out});
             };
 
-            defer if (cli.options.output) |out| {
+            defer if (cli.options.output) |_| {
                 output_file.close();
             };
 
@@ -202,7 +200,7 @@ const DeviceInfo = struct {
     tokens: []const Token,
 };
 
-fn compileBasic(allocator: *std.mem.Allocator, input_stream: anytype, output_stream: anytype, device: DeviceInfo) !void {
+fn compileBasic(allocator: std.mem.Allocator, input_stream: anytype, output_stream: anytype, device: DeviceInfo) !void {
     const Line = struct {
         number: u16,
         tokens: []u8,
@@ -262,7 +260,7 @@ fn compileBasic(allocator: *std.mem.Allocator, input_stream: anytype, output_str
 
             try lines.append(Line{
                 .number = number,
-                .tokens = try string_arena.allocator.dupe(u8, translate_stream.getWritten()),
+                .tokens = try string_arena.allocator().dupe(u8, translate_stream.getWritten()),
             });
         }
     }
@@ -272,7 +270,7 @@ fn compileBasic(allocator: *std.mem.Allocator, input_stream: anytype, output_str
 
         try output_stream.writeIntLittle(u16, start_offset);
         for (lines.items) |line| {
-            start_offset += @intCast(u16, 0x05 + 0x01 + line.tokens.len);
+            start_offset += @as(u16, @intCast(0x05 + 0x01 + line.tokens.len));
 
             try output_stream.writeIntLittle(u16, start_offset);
             try output_stream.writeIntLittle(u16, line.number);
@@ -291,19 +289,36 @@ const Token = struct {
     text: []const u8,
     sequence: []const u8,
 
-    fn compareText(ctx: void, lhs: Self, rhs: Self) bool {
+    fn compareTextLessThan(ctx: void, lhs: Self, rhs: Self) bool {
+        _ = ctx;
         return std.mem.order(u8, lhs.text, rhs.text) == .lt;
     }
 
-    fn compareSequence(ctx: void, lhs: Self, rhs: Self) bool {
+    fn compareSequenceLessThan(ctx: void, lhs: Self, rhs: Self) bool {
+        _ = ctx;
         return std.mem.order(u8, lhs.text, rhs.text) == .lt;
+    }
+
+    fn compareTextGreaterThan(ctx: void, lhs: Self, rhs: Self) bool {
+        _ = ctx;
+        return std.mem.order(u8, lhs.text, rhs.text) == .gt;
+    }
+
+    fn compareSequenceGreaterThan(ctx: void, lhs: Self, rhs: Self) bool {
+        _ = ctx;
+        return std.mem.order(u8, lhs.text, rhs.text) == .gt;
     }
 };
 
 fn sortTokens(tokens: anytype) @TypeOf(tokens) {
     var mut = tokens;
     @setEvalBranchQuota(tokens.len * tokens.len);
-    std.sort.sort(Token, &mut, {}, Token.compareText);
+
+    // must sort descending as we need to have "prefixes" of other tokens AFTER
+    // those.
+    // Example:
+    // { … "PRINT#" "PRINT" … }
+    std.sort.block(Token, &mut, {}, Token.compareTextGreaterThan);
     return mut;
 }
 
